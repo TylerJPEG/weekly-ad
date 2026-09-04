@@ -219,7 +219,7 @@ button:focus-visible,
   height: 100%;
   overflow: auto;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
   scrollbar-gutter: stable;
 }
@@ -302,10 +302,10 @@ button:focus-visible,
   overflow: hidden;
 }
 
-.zoom-controls button,
-.zoom-controls output {
+.zoom-controls button {
   min-width: 44px;
   height: 100%;
+  padding: 0 12px;
   border: 0;
   border-right: 1px solid #d0d0d0;
   background: #fff;
@@ -319,17 +319,31 @@ button:focus-visible,
   cursor: pointer;
 }
 
+.zoom-controls button:first-child,
+.zoom-controls button:last-of-type {
+  width: 44px;
+  padding-inline: 0;
+}
+
+.zoom-controls button:last-of-type {
+  border-right: 0;
+}
+
 .zoom-controls button:disabled {
   color: #aaa;
   cursor: default;
 }
 
-.zoom-controls output {
-  display: grid;
-  place-items: center;
-  padding: 0 10px;
-  border-right: 0;
-  font-variant-numeric: tabular-nums;
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .list-toggle {
@@ -468,7 +482,6 @@ button:focus-visible,
   .flyer-viewport {
     scrollbar-width: none;
     scrollbar-gutter: auto;
-    touch-action: pan-x pan-y;
   }
 
   .flyer-viewport::-webkit-scrollbar {
@@ -674,10 +687,6 @@ button:focus-visible,
     min-width: 44px;
   }
 
-  .is-list-open .zoom-controls output {
-    display: none;
-  }
-
   .is-list-open .list-toggle {
     padding-inline: 12px;
   }
@@ -711,10 +720,6 @@ button:focus-visible,
 
   .zoom-controls button {
     min-width: 44px;
-  }
-
-  .zoom-controls output {
-    display: none;
   }
 
   .list-toggle {

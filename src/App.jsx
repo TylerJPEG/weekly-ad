@@ -864,7 +864,7 @@ function WeeklyAd({ onClose }) {
           aria-label={
             isHorizontal
               ? "Weekly ad pages. Scroll horizontally, drag to pan, or pinch to zoom."
-              : "Weekly ad pages. Scroll vertically or pinch to zoom."
+              : "Weekly ad pages. Pan with one finger or pinch to zoom."
           }
         >
           <div className="flyer-track">
@@ -931,8 +931,12 @@ function WeeklyAd({ onClose }) {
             >
               −
             </button>
-            <button type="button" onClick={() => setZoomKeepingCenter(1)}>
-              Fit
+            <button
+              type="button"
+              disabled={Math.abs(zoom - 1) < 0.001}
+              onClick={() => setZoomKeepingCenter(1)}
+            >
+              Reset zoom
             </button>
             <button
               type="button"
@@ -942,7 +946,9 @@ function WeeklyAd({ onClose }) {
             >
               +
             </button>
-            <output aria-live="polite">{Math.round(zoom * 100)}%</output>
+            <span className="visually-hidden" aria-live="polite">
+              Zoom level {Math.round(zoom * 100)}%
+            </span>
           </div>
 
           {isHorizontal && (
