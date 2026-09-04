@@ -469,6 +469,19 @@ function WeeklyAd({ onClose }) {
     centerPageAfterLayout(indexToPreserve, "auto");
   };
 
+  const dismissListFromCanvas = (event) => {
+    if (!listOpen || event.target.closest(".flyer-page")) return;
+
+    if (suppressPageClickRef.current) {
+      suppressPageClickRef.current = false;
+      return;
+    }
+
+    const indexToPreserve = activeIndexRef.current;
+    setListOpen(false);
+    centerPageAfterLayout(indexToPreserve, "auto");
+  };
+
   const moveListPage = (direction) => {
     const nextIndex = Math.min(
       pages.length - 1,
@@ -902,6 +915,7 @@ function WeeklyAd({ onClose }) {
           id="flyer-page-scroll"
           ref={viewportRef}
           role="region"
+          onClick={dismissListFromCanvas}
           onPointerDown={startPanning}
           onPointerMove={continuePanning}
           onPointerUp={stopPanning}
