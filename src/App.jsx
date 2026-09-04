@@ -138,7 +138,11 @@ function WeeklyAd({ onClose }) {
   const pageNavigationFrameRef = useRef(null);
   const navigationTargetRef = useRef(null);
   const navigationReleaseTimerRef = useRef(null);
-  const zoomFrameRef = useRef(null);
+  const pendingZoomAnchorRef = useRef(null);
+  const pinchStateRef = useRef(null);
+  const gestureStateRef = useRef(null);
+  const zoomRef = useRef(1);
+  const zoomSettleTimerRef = useRef(null);
   const isZoomingRef = useRef(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [listOpen, setListOpen] = useState(false);
@@ -150,6 +154,7 @@ function WeeklyAd({ onClose }) {
     window.matchMedia("(min-width: 900px)").matches,
   );
   activeIndexRef.current = selectedIndex;
+  zoomRef.current = zoom;
 
   useLayoutEffect(() => {
     dialogRef.current?.focus({ preventScroll: true });
@@ -185,8 +190,8 @@ function WeeklyAd({ onClose }) {
     () => () => {
       clearTimeout(suppressPageClickTimerRef.current);
       clearTimeout(navigationReleaseTimerRef.current);
+      clearTimeout(zoomSettleTimerRef.current);
       cancelAnimationFrame(pageNavigationFrameRef.current);
-      cancelAnimationFrame(zoomFrameRef.current);
     },
     [],
   );
@@ -522,73 +527,306 @@ function WeeklyAd({ onClose }) {
     }
   };
 
-  const setZoomKeepingCenter = (nextZoom) => {
+  const positionZoomAnchor = useCallback((anchor) => {
     const viewport = viewportRef.current;
-    const anchorIndex = activeIndexRef.current;
-    const anchorPage = pageRefs.current[anchorIndex];
-    if (!viewport || !anchorPage || nextZoom === zoom) return;
+    const page = pageRefs.current[anchor?.index];
+    if (!viewport || !page || !anchor) return;
 
-    cancelExplicitNavigation();
+    const nextLeft =
+      page.offsetLeft +
+      anchor.focalX * page.offsetWidth -
+      anchor.viewportX;
+    const nextTop =
+      page.offsetTop +
+      anchor.focalY * page.offsetHeight -
+      anchor.viewportY;
 
-    const focalX = Math.min(
-      1,
-      Math.max(
-        0,
-        (viewport.scrollLeft + viewport.clientWidth / 2 - anchorPage.offsetLeft) /
-          Math.max(1, anchorPage.offsetWidth),
+    viewport.scrollTo({
+      left: Math.min(
+        Math.max(0, viewport.scrollWidth - viewport.clientWidth),
+        Math.max(0, nextLeft),
       ),
-    );
-    const focalY = Math.min(
-      1,
-      Math.max(
-        0,
-        (viewport.scrollTop + viewport.clientHeight / 2 - anchorPage.offsetTop) /
-          Math.max(1, anchorPage.offsetHeight),
+      top: Math.min(
+        Math.max(0, viewport.scrollHeight - viewport.clientHeight),
+        Math.max(0, nextTop),
       ),
-    );
-
-    cancelAnimationFrame(zoomFrameRef.current);
-    isZoomingRef.current = true;
-    setZoom(nextZoom);
-    zoomFrameRef.current = requestAnimationFrame(() => {
-      zoomFrameRef.current = requestAnimationFrame(() => {
-        const resizedPage = pageRefs.current[anchorIndex];
-        if (!resizedPage) {
-          isZoomingRef.current = false;
-          return;
-        }
-
-        const nextLeft =
-          resizedPage.offsetLeft +
-          focalX * resizedPage.offsetWidth -
-          viewport.clientWidth / 2;
-        const nextTop =
-          resizedPage.offsetTop +
-          focalY * resizedPage.offsetHeight -
-          viewport.clientHeight / 2;
-
-        viewport.scrollTo({
-          left: Math.min(
-            Math.max(0, viewport.scrollWidth - viewport.clientWidth),
-            Math.max(0, nextLeft),
-          ),
-          top: Math.min(
-            Math.max(0, viewport.scrollHeight - viewport.clientHeight),
-            Math.max(0, nextTop),
-          ),
-          behavior: "auto",
-        });
-        activeIndexRef.current = anchorIndex;
-        setSelectedIndex(anchorIndex);
-
-        zoomFrameRef.current = requestAnimationFrame(() => {
-          isZoomingRef.current = false;
-        });
-      });
+      behavior: "auto",
     });
-  };
+    activeIndexRef.current = anchor.index;
+    setSelectedIndex(anchor.index);
+  }, []);
 
-  const zoomIndex = zoomLevels.indexOf(zoom);
+  const createZoomAnchor = useCallback((clientX, clientY, preferredIndex) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return null;
+
+    const viewportRect = viewport.getBoundingClientRect();
+    const viewportX = Math.min(
+      viewport.clientWidth,
+      Math.max(0, clientX - viewportRect.left),
+    );
+    const viewportY = Math.min(
+      viewport.clientHeight,
+      Math.max(0, clientY - viewportRect.top),
+    );
+    const pointedPage = document
+      .elementFromPoint(clientX, clientY)
+      ?.closest?.(".flyer-page");
+    const pointedIndex = Number(pointedPage?.dataset.pageIndex);
+    const index = Number.isInteger(preferredIndex)
+      ? preferredIndex
+      : Number.isInteger(pointedIndex)
+        ? pointedIndex
+        : activeIndexRef.current;
+    const page = pageRefs.current[index];
+    if (!page) return null;
+
+    return {
+      index,
+      focalX: Math.min(
+        1,
+        Math.max(
+          0,
+          (viewport.scrollLeft + viewportX - page.offsetLeft) /
+            Math.max(1, page.offsetWidth),
+        ),
+      ),
+      focalY: Math.min(
+        1,
+        Math.max(
+          0,
+          (viewport.scrollTop + viewportY - page.offsetTop) /
+            Math.max(1, page.offsetHeight),
+        ),
+      ),
+      viewportX,
+      viewportY,
+    };
+  }, []);
+
+  const finishCanvasZoomSoon = useCallback(() => {
+    clearTimeout(zoomSettleTimerRef.current);
+    zoomSettleTimerRef.current = setTimeout(() => {
+      isZoomingRef.current = false;
+    }, 120);
+  }, []);
+
+  const setCanvasZoom = useCallback(
+    (nextZoom, anchor) => {
+      if (!anchor) return;
+
+      const clampedZoom = Math.min(
+        zoomLevels[zoomLevels.length - 1],
+        Math.max(zoomLevels[0], nextZoom),
+      );
+      const roundedZoom = Math.round(clampedZoom * 1000) / 1000;
+
+      cancelExplicitNavigation();
+      isZoomingRef.current = true;
+      activeIndexRef.current = anchor.index;
+      pendingZoomAnchorRef.current = anchor;
+
+      if (Math.abs(roundedZoom - zoomRef.current) < 0.001) {
+        positionZoomAnchor(anchor);
+        pendingZoomAnchorRef.current = null;
+        finishCanvasZoomSoon();
+        return;
+      }
+
+      zoomRef.current = roundedZoom;
+      setZoom(roundedZoom);
+      finishCanvasZoomSoon();
+    },
+    [cancelExplicitNavigation, finishCanvasZoomSoon, positionZoomAnchor],
+  );
+
+  const setZoomKeepingCenter = useCallback(
+    (nextZoom) => {
+      const viewport = viewportRef.current;
+      if (!viewport) return;
+
+      const viewportRect = viewport.getBoundingClientRect();
+      const anchor = createZoomAnchor(
+        viewportRect.left + viewport.clientWidth / 2,
+        viewportRect.top + viewport.clientHeight / 2,
+        activeIndexRef.current,
+      );
+      setCanvasZoom(nextZoom, anchor);
+    },
+    [createZoomAnchor, setCanvasZoom],
+  );
+
+  useLayoutEffect(() => {
+    const anchor = pendingZoomAnchorRef.current;
+    if (!anchor) return;
+
+    positionZoomAnchor(anchor);
+    pendingZoomAnchorRef.current = null;
+  }, [pageSize, positionZoomAnchor, zoom]);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+
+    const touchMetrics = (touches) => {
+      const firstTouch = touches[0];
+      const secondTouch = touches[1];
+      if (!firstTouch || !secondTouch) return null;
+
+      return {
+        clientX: (firstTouch.clientX + secondTouch.clientX) / 2,
+        clientY: (firstTouch.clientY + secondTouch.clientY) / 2,
+        distance: Math.hypot(
+          secondTouch.clientX - firstTouch.clientX,
+          secondTouch.clientY - firstTouch.clientY,
+        ),
+      };
+    };
+
+    const beginTouchPinch = (event) => {
+      if (event.touches.length !== 2) return;
+
+      const metrics = touchMetrics(event.touches);
+      const anchor = metrics
+        ? createZoomAnchor(metrics.clientX, metrics.clientY)
+        : null;
+      if (!metrics || !anchor) return;
+
+      event.preventDefault();
+      pinchStateRef.current = {
+        anchor,
+        startDistance: Math.max(1, metrics.distance),
+        startZoom: zoomRef.current,
+      };
+      isZoomingRef.current = true;
+    };
+
+    const continueTouchPinch = (event) => {
+      const pinchState = pinchStateRef.current;
+      if (!pinchState || event.touches.length < 2) return;
+
+      const metrics = touchMetrics(event.touches);
+      if (!metrics) return;
+
+      event.preventDefault();
+      setCanvasZoom(
+        pinchState.startZoom *
+          (metrics.distance / pinchState.startDistance),
+        {
+          ...pinchState.anchor,
+          viewportX:
+            metrics.clientX - viewport.getBoundingClientRect().left,
+          viewportY:
+            metrics.clientY - viewport.getBoundingClientRect().top,
+        },
+      );
+    };
+
+    const endTouchPinch = (event) => {
+      if (!pinchStateRef.current || event.touches.length >= 2) return;
+
+      pinchStateRef.current = null;
+      suppressPageClickRef.current = true;
+      clearTimeout(suppressPageClickTimerRef.current);
+      suppressPageClickTimerRef.current = setTimeout(() => {
+        suppressPageClickRef.current = false;
+      }, 350);
+      finishCanvasZoomSoon();
+    };
+
+    const zoomFromWheel = (event) => {
+      cancelExplicitNavigation();
+      if (!event.ctrlKey) return;
+
+      event.preventDefault();
+      const anchor = createZoomAnchor(event.clientX, event.clientY);
+      const scaleChange = Math.exp(-event.deltaY * 0.01);
+      setCanvasZoom(zoomRef.current * scaleChange, anchor);
+    };
+
+    const beginGesture = (event) => {
+      event.preventDefault();
+      const viewportRect = viewport.getBoundingClientRect();
+      const clientX = Number.isFinite(event.clientX)
+        ? event.clientX
+        : viewportRect.left + viewport.clientWidth / 2;
+      const clientY = Number.isFinite(event.clientY)
+        ? event.clientY
+        : viewportRect.top + viewport.clientHeight / 2;
+      const anchor = createZoomAnchor(clientX, clientY);
+      if (!anchor) return;
+
+      gestureStateRef.current = {
+        anchor,
+        startZoom: zoomRef.current,
+      };
+      isZoomingRef.current = true;
+    };
+
+    const continueGesture = (event) => {
+      const gestureState = gestureStateRef.current;
+      if (!gestureState) return;
+
+      event.preventDefault();
+      const viewportRect = viewport.getBoundingClientRect();
+      const clientX = Number.isFinite(event.clientX)
+        ? event.clientX
+        : viewportRect.left + gestureState.anchor.viewportX;
+      const clientY = Number.isFinite(event.clientY)
+        ? event.clientY
+        : viewportRect.top + gestureState.anchor.viewportY;
+      setCanvasZoom(gestureState.startZoom * event.scale, {
+        ...gestureState.anchor,
+        viewportX: clientX - viewportRect.left,
+        viewportY: clientY - viewportRect.top,
+      });
+    };
+
+    const endGesture = (event) => {
+      if (!gestureStateRef.current) return;
+      event.preventDefault();
+      gestureStateRef.current = null;
+      finishCanvasZoomSoon();
+    };
+
+    viewport.addEventListener("touchstart", beginTouchPinch, {
+      passive: false,
+    });
+    viewport.addEventListener("touchmove", continueTouchPinch, {
+      passive: false,
+    });
+    viewport.addEventListener("touchend", endTouchPinch);
+    viewport.addEventListener("touchcancel", endTouchPinch);
+    viewport.addEventListener("wheel", zoomFromWheel, { passive: false });
+    viewport.addEventListener("gesturestart", beginGesture, {
+      passive: false,
+    });
+    viewport.addEventListener("gesturechange", continueGesture, {
+      passive: false,
+    });
+    viewport.addEventListener("gestureend", endGesture, { passive: false });
+
+    return () => {
+      viewport.removeEventListener("touchstart", beginTouchPinch);
+      viewport.removeEventListener("touchmove", continueTouchPinch);
+      viewport.removeEventListener("touchend", endTouchPinch);
+      viewport.removeEventListener("touchcancel", endTouchPinch);
+      viewport.removeEventListener("wheel", zoomFromWheel);
+      viewport.removeEventListener("gesturestart", beginGesture);
+      viewport.removeEventListener("gesturechange", continueGesture);
+      viewport.removeEventListener("gestureend", endGesture);
+    };
+  }, [
+    cancelExplicitNavigation,
+    createZoomAnchor,
+    finishCanvasZoomSoon,
+    setCanvasZoom,
+  ]);
+
+  const previousZoom = [...zoomLevels]
+    .reverse()
+    .find((level) => level < zoom - 0.01);
+  const nextZoom = zoomLevels.find((level) => level > zoom + 0.01);
   const selectedPage = pages[selectedIndex];
 
   return (
@@ -623,11 +861,10 @@ function WeeklyAd({ onClose }) {
           onPointerMove={continuePanning}
           onPointerUp={stopPanning}
           onPointerCancel={stopPanning}
-          onWheel={cancelExplicitNavigation}
           aria-label={
             isHorizontal
-              ? "Weekly ad pages. Scroll horizontally or drag to pan."
-              : "Weekly ad pages. Scroll vertically."
+              ? "Weekly ad pages. Scroll horizontally, drag to pan, or pinch to zoom."
+              : "Weekly ad pages. Scroll vertically or pinch to zoom."
           }
         >
           <div className="flyer-track">
@@ -689,8 +926,8 @@ function WeeklyAd({ onClose }) {
             <button
               type="button"
               aria-label="Zoom out"
-              disabled={zoomIndex === 0}
-              onClick={() => setZoomKeepingCenter(zoomLevels[zoomIndex - 1])}
+              disabled={previousZoom === undefined}
+              onClick={() => setZoomKeepingCenter(previousZoom)}
             >
               −
             </button>
@@ -700,8 +937,8 @@ function WeeklyAd({ onClose }) {
             <button
               type="button"
               aria-label="Zoom in"
-              disabled={zoomIndex === zoomLevels.length - 1}
-              onClick={() => setZoomKeepingCenter(zoomLevels[zoomIndex + 1])}
+              disabled={nextZoom === undefined}
+              onClick={() => setZoomKeepingCenter(nextZoom)}
             >
               +
             </button>
