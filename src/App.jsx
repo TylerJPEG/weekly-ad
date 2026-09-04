@@ -141,10 +141,12 @@ function WeeklyAd({ onClose }) {
   const pendingZoomAnchorRef = useRef(null);
   const pinchStateRef = useRef(null);
   const gestureStateRef = useRef(null);
+  const focusedPageIndexRef = useRef(null);
   const zoomRef = useRef(1);
   const zoomSettleTimerRef = useRef(null);
   const isZoomingRef = useRef(false);
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [tabbablePageIndex, setTabbablePageIndex] = useState(0);
   const [listOpen, setListOpen] = useState(false);
   const [isPanning, setIsPanning] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -185,6 +187,12 @@ function WeeklyAd({ onClose }) {
     mediaQuery.addEventListener("change", updateOrientation);
     return () => mediaQuery.removeEventListener("change", updateOrientation);
   }, []);
+
+  useEffect(() => {
+    if (focusedPageIndexRef.current === null) {
+      setTabbablePageIndex(selectedIndex);
+    }
+  }, [selectedIndex]);
 
   useEffect(
     () => () => {
@@ -386,22 +394,59 @@ function WeeklyAd({ onClose }) {
         }
         return;
       }
-
-      if (
-        !isHorizontal ||
-        (event.key !== "ArrowLeft" && event.key !== "ArrowRight") ||
-        event.target instanceof HTMLInputElement
-      ) {
-        return;
-      }
-
-      event.preventDefault();
-      moveViewerPage(event.key === "ArrowRight" ? 1 : -1);
     };
 
     document.addEventListener("keydown", handleKeyDown);
     return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [isHorizontal, listOpen, moveViewerPage, onClose]);
+  }, [listOpen, onClose]);
+
+  const moveFocusedPage = (currentIndex, event) => {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+
+    let nextIndex = currentIndex;
+    if (
+      event.key === "ArrowRight" ||
+      (!isHorizontal && event.key === "ArrowDown")
+    ) {
+      nextIndex = Math.min(pages.length - 1, currentIndex + 1);
+    } else if (
+      event.key === "ArrowLeft" ||
+      (!isHorizontal && event.key === "ArrowUp")
+    ) {
+      nextIndex = Math.max(0, currentIndex - 1);
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = pages.length - 1;
+    } else {
+      return;
+    }
+
+    event.preventDefault();
+    if (nextIndex === currentIndex) return;
+
+    holdExplicitNavigation(nextIndex);
+    activeIndexRef.current = nextIndex;
+    focusedPageIndexRef.current = nextIndex;
+    setSelectedIndex(nextIndex);
+    setTabbablePageIndex(nextIndex);
+    requestAnimationFrame(() => {
+      pageRefs.current[nextIndex]?.focus({ preventScroll: true });
+      scrollPageIntoView(nextIndex);
+    });
+  };
+
+  const handlePageFocus = (index) => {
+    focusedPageIndexRef.current = index;
+    setTabbablePageIndex(index);
+  };
+
+  const handlePageBlur = (event) => {
+    if (event.relatedTarget?.closest?.(".flyer-page")) return;
+
+    focusedPageIndexRef.current = null;
+    setTabbablePageIndex(activeIndexRef.current);
+  };
 
   const selectPage = (index, event) => {
     if (suppressPageClickRef.current) {
@@ -856,7 +901,7 @@ function WeeklyAd({ onClose }) {
           }${isPanning ? " is-panning" : ""}`}
           id="flyer-page-scroll"
           ref={viewportRef}
-          tabIndex={0}
+          role="region"
           onPointerDown={startPanning}
           onPointerMove={continuePanning}
           onPointerUp={stopPanning}
@@ -867,18 +912,30 @@ function WeeklyAd({ onClose }) {
               : "Weekly ad pages. Pan with one finger or pinch to zoom."
           }
         >
-          <div className="flyer-track">
+          <span className="visually-hidden" id="flyer-page-keyboard-hint">
+            Use arrow keys to move between flyer pages. Press Enter or Space
+            to show or close the item list for the active page.
+          </span>
+          <div className="flyer-track" role="group" aria-label="Flyer pages">
             {pages.map((page, index) => (
               <button
                 className="flyer-page"
                 data-page-index={index}
                 key={page.id}
                 onClick={(event) => selectPage(index, event)}
+                onBlur={handlePageBlur}
+                onFocus={() => handlePageFocus(index)}
+                onKeyDown={(event) => moveFocusedPage(index, event)}
                 ref={(node) => {
                   pageRefs.current[index] = node;
                 }}
                 style={{ inlineSize: `${pageSize}px` }}
+                tabIndex={index === tabbablePageIndex ? 0 : -1}
                 type="button"
+                aria-current={index === selectedIndex ? "page" : undefined}
+                aria-describedby="flyer-page-keyboard-hint"
+                aria-expanded={listOpen && index === selectedIndex}
+                aria-controls="page-item-list"
                 aria-label={
                   listOpen && index === selectedIndex
                     ? `Close item list for flyer page ${page.number}`
@@ -933,10 +990,11 @@ function WeeklyAd({ onClose }) {
             </button>
             <button
               type="button"
+              aria-label="Reset flyer zoom to fit"
               disabled={Math.abs(zoom - 1) < 0.001}
               onClick={() => setZoomKeepingCenter(1)}
             >
-              Reset zoom
+              Fit
             </button>
             <button
               type="button"

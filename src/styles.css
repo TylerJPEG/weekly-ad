@@ -319,6 +319,12 @@ button:focus-visible,
   cursor: pointer;
 }
 
+.zoom-controls button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline-offset: -4px;
+}
+
 .zoom-controls button:first-child,
 .zoom-controls button:last-of-type {
   width: 44px;
